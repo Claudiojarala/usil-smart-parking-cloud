@@ -2,7 +2,6 @@ import os
 import re
 import json
 import time
-import hashlib
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import streamlit as st
@@ -13,110 +12,221 @@ from google import genai
 from google.genai import types
 
 # ====================
-# CONFIGURACIÓN
+# CONFIGURACIÓN DE PÁGINA
 # ====================
 st.set_page_config(
-    page_title="ParkGate · Control de acceso",
-    page_icon=":material/local_parking:",
+    page_title="ParkGate AI · Smart Parking USIL",
+    page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="collapsed"
 )
 
 MONGODB_URI    = os.getenv("MONGODB_URI") or st.secrets.get("app", {}).get("MONGODB_URI", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or st.secrets.get("app", {}).get("GOOGLE_API_KEY", "")
 
-BROKER       = "broker.hivemq.com"
-PORT         = 1883
-TOPIC_ESTADO = "usil/iot/parking/p01/estado"
-TOPIC_DISPON = "usil/iot/parking/p01/disponibilidad"
-TOPIC_CMD    = "usil/iot/parking/p01/cmd"
-TZ_LIMA      = timezone(timedelta(hours=-5))
+BROKER        = "broker.hivemq.com"
+PORT          = 1883
+TOPIC_ESTADO  = "usil/iot/parking/p01/estado"
+TOPIC_DISPON  = "usil/iot/parking/p01/disponibilidad"
+TOPIC_CMD     = "usil/iot/parking/p01/cmd"
+TOPIC_LCD     = "usil/iot/parking/p01/lcd"
+
+TZ_LIMA = timezone(timedelta(hours=-5))
 
 # ====================
-# ICONOS (SVG en línea, estilo Lucide)
-# ====================
-ICONS = {
-    "shield":  '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
-    "check":   '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
-    "ban":     '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
-    "alert":   '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
-    "parking": '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/>',
-    "login":   '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/>',
-    "logout":  '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
-    "wifi":    '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/>',
-    "wifioff": '<path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/>',
-}
-
-def ico(name, size=18, sw=2):
-    return (f'<svg class="ico" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
-            f'stroke="currentColor" stroke-width="{sw}" stroke-linecap="round" stroke-linejoin="round">'
-            f'{ICONS[name]}</svg>')
-
-# ====================
-# ESTILOS
+# ESTILOS CSS DE PRODUCCIÓN (PORTADOS DE PARKGATE-AI)
 # ====================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&display=swap');
-:root {
-  --bg:#0E1116; --panel:#151A21; --line:#252C36; --text:#E8ECF1; --muted:#8A94A3;
-  --ok:#3FB68B; --deny:#E5484D; --warn:#E0A526; --blue:#4C8DFF;
-}
-#MainMenu, footer {visibility:hidden;}
-.block-container {padding-top:1.4rem; padding-bottom:2.5rem; max-width:1180px;}
-.ico {vertical-align:-3px; flex-shrink:0;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .block-container {
+        padding-top: 1.35rem;
+        padding-bottom: 2.5rem;
+        max-width: 1220px;
+    }
 
-/* Encabezado */
-.pg-head {display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center;
-  gap:1rem; padding-bottom:1rem; margin-bottom:1.1rem; border-bottom:1px solid var(--line);}
-.pg-brand {display:flex; align-items:center; gap:.75rem;}
-.pg-brand .ico {color:var(--blue);}
-.pg-title {font-size:1.35rem; font-weight:650; color:var(--text); line-height:1.2; margin:0;}
-.pg-sub {font-size:.85rem; color:var(--muted); margin:.1rem 0 0;}
-.pg-pill {display:inline-flex; align-items:center; gap:.5rem; padding:.4rem .85rem;
-  border-radius:999px; font-size:.84rem; font-weight:600; border:1px solid;}
-.pg-pill.on  {color:var(--ok);   border-color:rgba(63,182,139,.45); background:rgba(63,182,139,.10);}
-.pg-pill.off {color:var(--deny); border-color:rgba(229,72,77,.45);  background:rgba(229,72,77,.10);}
+    /* Hero Header */
+    .hero-header {
+        background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+        border: 1px solid #334155;
+        border-radius: 16px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.45);
+    }
+    .hero-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #F8FAFC;
+        margin: 0;
+        letter-spacing: -0.02em;
+    }
+    .hero-sub {
+        font-size: 0.86rem;
+        color: #94A3B8;
+        margin: 0.25rem 0 0 0;
+    }
 
-/* Panel de estado */
-.pg-panel {background:var(--panel); border:1px solid var(--line); border-radius:10px;
-  padding:1.1rem 1.3rem; height:100%;}
-.pg-label {display:flex; align-items:center; gap:.45rem; font-size:.88rem; color:var(--muted); font-weight:500;}
-.pg-big {font-size:2.5rem; font-weight:700; color:var(--text); line-height:1.1;
-  font-variant-numeric:tabular-nums; margin:.35rem 0 .15rem;}
-.pg-big small {font-size:1.05rem; color:var(--muted); font-weight:500;}
-.pg-foot {font-size:.82rem; color:var(--muted);}
-.pg-slots {display:flex; gap:6px; margin-top:.85rem;}
-.pg-slot {flex:1; max-width:56px; height:26px; border-radius:4px; border:2px solid var(--line);}
-.pg-slot.busy {background:var(--blue); border-color:var(--blue);}
-.pg-state {font-size:1.5rem; font-weight:650; margin:.5rem 0 .1rem;}
+    /* Badges IoT */
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.42rem 0.9rem;
+        border-radius: 9999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+    }
+    .status-online {
+        background: rgba(16, 185, 129, 0.15);
+        color: #34D399;
+        border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .status-offline {
+        background: rgba(244, 63, 94, 0.15);
+        color: #FB7185;
+        border: 1px solid rgba(244, 63, 94, 0.4);
+    }
+    .dot-online {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #10B981;
+        box-shadow: 0 0 8px #10B981;
+    }
+    .dot-offline {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #F43F5E;
+    }
 
-/* Resultado del escáner */
-.pg-verdict {border:1px solid var(--line); border-left:5px solid var(--c); border-radius:10px;
-  background:var(--panel); padding:1.1rem 1.3rem; margin-top:.5rem;}
-.pg-verdict-title {display:flex; align-items:center; gap:.55rem; font-size:1.05rem;
-  font-weight:650; color:var(--c);}
-.pg-detail {color:var(--text); font-size:.95rem; margin-top:.5rem;}
-.pg-meta {color:var(--muted); font-size:.82rem; margin-top:.25rem;}
+    /* Alert Strip */
+    .alert-banner {
+        background: rgba(245, 158, 11, 0.12);
+        border: 1px solid rgba(245, 158, 11, 0.45);
+        border-left: 5px solid #F59E0B;
+        border-radius: 12px;
+        padding: 0.75rem 1.1rem;
+        margin-bottom: 1rem;
+        color: #FDE68A;
+        font-size: 0.88rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
 
-/* Placa */
-.pg-plate {display:inline-flex; flex-direction:column; align-items:center; background:#F7F7F2;
-  border:2px solid #1B1F26; border-radius:6px; padding:.1rem 1.1rem .2rem; margin:.7rem 0 .1rem;
-  box-shadow:0 2px 8px rgba(0,0,0,.45);}
-.pg-plate-top {font-family:'Barlow Condensed','Arial Narrow',sans-serif; font-weight:600;
-  font-size:.68rem; letter-spacing:.3em; color:#B3262B; margin-bottom:-.15rem;}
-.pg-plate-num {font-family:'Barlow Condensed','Arial Narrow',sans-serif; font-weight:700;
-  font-size:2.6rem; letter-spacing:.08em; color:#12151A; line-height:1.1;}
+    /* KPI Strip */
+    .kpi-card {
+        background: #111827;
+        border: 1px solid #1F2937;
+        border-radius: 14px;
+        padding: 1.05rem 1.2rem;
+        transition: border-color 0.2s ease;
+    }
+    .kpi-card:hover {
+        border-color: #3B82F6;
+    }
+    .kpi-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #94A3B8;
+        font-weight: 600;
+        margin-bottom: 0.3rem;
+    }
+    .kpi-value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #F8FAFC;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.15;
+    }
+    .kpi-foot {
+        font-size: 0.76rem;
+        color: #64748B;
+        margin-top: 0.3rem;
+    }
 
-/* Pestañas */
-.stTabs [data-baseweb="tab-list"] {gap:4px; border-bottom:1px solid var(--line);}
-.stTabs [data-baseweb="tab"] {padding:.55rem 1rem; font-weight:600;}
-.stButton > button, .stFormSubmitButton > button {border-radius:8px; font-weight:600;}
+    /* Space Monitor Cards (Espacio 1 y 2) */
+    .space-card-free {
+        background: linear-gradient(145deg, rgba(6, 78, 59, 0.3), #111827);
+        border: 1px solid rgba(16, 185, 129, 0.45);
+        border-radius: 14px;
+        padding: 1.1rem 1.25rem;
+    }
+    .space-card-busy {
+        background: linear-gradient(145deg, rgba(136, 19, 55, 0.3), #111827);
+        border: 1px solid rgba(244, 63, 94, 0.45);
+        border-radius: 14px;
+        padding: 1.1rem 1.25rem;
+    }
+
+    /* Ticket digital LPR */
+    .ticket-ok {
+        background: linear-gradient(145deg, rgba(6, 78, 59, 0.48), rgba(17, 24, 39, 0.96));
+        border: 1px solid #10B981;
+        border-left: 6px solid #10B981;
+        border-radius: 14px;
+        padding: 1.2rem 1.35rem;
+        margin-top: 0.65rem;
+    }
+    .ticket-warn {
+        background: linear-gradient(145deg, rgba(146, 64, 14, 0.48), rgba(17, 24, 39, 0.96));
+        border: 1px solid #F59E0B;
+        border-left: 6px solid #F59E0B;
+        border-radius: 14px;
+        padding: 1.2rem 1.35rem;
+        margin-top: 0.65rem;
+    }
+    .ticket-deny {
+        background: linear-gradient(145deg, rgba(136, 19, 55, 0.48), rgba(17, 24, 39, 0.96));
+        border: 1px solid #F43F5E;
+        border-left: 6px solid #F43F5E;
+        border-radius: 14px;
+        padding: 1.2rem 1.35rem;
+        margin-top: 0.65rem;
+    }
+    .plate-badge {
+        display: inline-block;
+        background: #F8FAFC;
+        color: #0F172A;
+        font-family: 'Courier New', monospace;
+        font-weight: 800;
+        font-size: 1.5rem;
+        letter-spacing: 0.12em;
+        padding: 0.22rem 0.8rem;
+        border-radius: 8px;
+        border: 2px solid #0F172A;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+        margin: 0.4rem 0;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 6px;
+        background-color: #111827;
+        padding: 6px;
+        border-radius: 12px;
+        border: 1px solid #1F2937;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-weight: 600;
+    }
+    .stButton > button {
+        border-radius: 10px;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ====================
-# CONEXIONES
+# CONEXIÓN MONGODB Y GEMINI
 # ====================
 @st.cache_resource
 def get_db():
@@ -135,16 +245,45 @@ db = get_db()
 gemini_client = get_gemini()
 
 # ====================
-# FUNCIONES DE APOYO
+# INICIALIZACIÓN DE ESTADO EN MONGODB (CAP 5, 3 OCUPADOS, 2 LIBRES)
+# ====================
+def asegurar_estado_inicial():
+    if db is None:
+        return {
+            "capacidad": 5, "ocupados_base": 3, "espacio_1_ocupado": False,
+            "espacio_2_ocupado": False, "led_verde_1": True, "led_verde_2": True,
+            "led_rojo_entrada": True, "led_rojo_salida": True,
+            "lcd_linea_1": "SMART PARKING USIL", "lcd_linea_2": "Libres: 2 / 5"
+        }
+    estado = db["estado_sistema"].find_one({"_id": "p01"})
+    if not estado:
+        estado = {
+            "_id": "p01",
+            "capacidad": 5,
+            "ocupados_base": 3,
+            "espacio_1_ocupado": False,
+            "espacio_2_ocupado": False,
+            "led_verde_1": True,
+            "led_verde_2": True,
+            "led_rojo_entrada": True,
+            "led_rojo_salida": True,
+            "lcd_linea_1": "SMART PARKING USIL",
+            "lcd_linea_2": "Libres: 2 / 5"
+        }
+        db["estado_sistema"].insert_one(estado)
+    return estado
+
+estado_db = asegurar_estado_inicial()
+
+# ====================
+# FUNCIONES DE APOYO (MQTT, LPR, AUDITORÍA)
 # ====================
 def obtener_estado_mqtt():
     datos = {"estado": None, "disponibilidad": "desconocido"}
-
     def on_connect(c, u, f, rc):
         if rc == 0:
             c.subscribe(TOPIC_ESTADO)
             c.subscribe(TOPIC_DISPON)
-
     def on_message(c, u, msg):
         payload = msg.payload.decode("utf-8", errors="ignore")
         if msg.topic == TOPIC_ESTADO:
@@ -161,28 +300,31 @@ def obtener_estado_mqtt():
     try:
         client.connect(BROKER, PORT, 15)
         client.loop_start()
-        time.sleep(0.9)
+        time.sleep(0.85)
         client.loop_stop()
         client.disconnect()
     except Exception:
         pass
     return datos
 
-def enviar_comando_esp32(cmd: str):
+def enviar_comando_esp32(cmd: str, topic: str = TOPIC_CMD):
     try:
-        publish.single(TOPIC_CMD, payload=cmd, hostname=BROKER, port=PORT)
+        publish.single(topic, payload=cmd, hostname=BROKER, port=PORT)
         return True
     except Exception as e:
-        st.error(f"No se pudo enviar el comando {cmd}: {e}")
+        st.error(f"Error enviando comando MQTT: {e}")
         return False
 
 def normalizar_placa(texto: str) -> str:
     limpio = re.sub(r"[^A-Z0-9]", "", texto.upper())
-    return f"{limpio[:3]}-{limpio[3:]}" if len(limpio) == 6 else limpio
+    if len(limpio) == 6:
+        return f"{limpio[:3]}-{limpio[3:]}"
+    return limpio
 
-def reconocer_placa_gemini(imagen_bytes: bytes, mime_type: str) -> str:
+def reconocer_placa_gemini(imagen_bytes: bytes, mime_type: str) -> tuple[str, float]:
+    inicio = time.perf_counter()
     if not gemini_client:
-        return "SIN_API_KEY"
+        return "SIN_API_KEY", 0.0
     prompt = (
         "Extrae únicamente el número de placa vehicular visible en la imagen. "
         "Responde SOLO con los caracteres alfanuméricos de la placa (ejemplo: ABC123 o ABC-123), "
@@ -190,270 +332,498 @@ def reconocer_placa_gemini(imagen_bytes: bytes, mime_type: str) -> str:
     )
     response = gemini_client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=[types.Part.from_bytes(data=imagen_bytes, mime_type=mime_type), prompt],
+        contents=[
+            types.Part.from_bytes(data=imagen_bytes, mime_type=mime_type),
+            prompt
+        ]
     )
-    return response.text.strip()
+    latencia = round(time.perf_counter() - inicio, 2)
+    return response.text.strip(), latencia
 
-def registrar_evento_db(evento: str, placa: str = "", detalle: str = ""):
+def registrar_evento_db(evento: str, placa: str = "", detalle: str = "", severidad: str = "INFO"):
     if db is not None:
         db["eventos_parking"].insert_one({
-            "evento": evento, "placa": placa, "detalle": detalle,
-            "origen": "WEB_LPR", "fecha_utc": datetime.now(timezone.utc),
+            "evento": evento,
+            "placa": placa,
+            "detalle": detalle,
+            "severidad": severidad,
+            "fecha_utc": datetime.now(timezone.utc)
         })
 
-def evaluar_placa(foto, libres):
-    """Reconoce la placa, decide el acceso y ejecuta los efectos (MQTT y log) una sola vez."""
-    hora = datetime.now(TZ_LIMA).strftime("%d/%m/%Y %H:%M:%S")
-    try:
-        raw = reconocer_placa_gemini(foto.getvalue(), foto.type)
-    except Exception as e:
-        return {"tipo": "error", "placa": "", "hora": hora, "detalle": str(e)}
-    if raw == "SIN_API_KEY":
-        return {"tipo": "config", "placa": "", "hora": hora, "detalle": "Falta GOOGLE_API_KEY."}
-    placa = normalizar_placa(raw)
-    if not placa or "SINPLACA" in placa:
-        return {"tipo": "sin_placa", "placa": "", "hora": hora, "detalle": ""}
-    if db is None:
-        return {"tipo": "config", "placa": placa, "hora": hora, "detalle": "Falta configurar MONGODB_URI."}
-
-    registro = db["placas_autorizadas"].find_one({"placa": placa, "activo": True})
-    if not registro:
-        registrar_evento_db("ACCESO_DENEGADO", placa, "Placa no autorizada")
-        return {"tipo": "denegado", "placa": placa, "hora": hora, "detalle": ""}
-
-    titular = registro.get("propietario", "Residente autorizado")
-    if libres <= 0:
-        registrar_evento_db("ACCESO_DENEGADO_LLENO", placa, titular)
-        return {"tipo": "lleno", "placa": placa, "hora": hora, "detalle": titular}
-
-    enviar_comando_esp32("ABRIR_ENTRADA")
-    registrar_evento_db("ACCESO_PLACA_OK", placa, f"Autorizado: {titular}")
-    return {"tipo": "ok", "placa": placa, "hora": hora, "detalle": titular}
-
-def veredicto_html(v):
-    placa_html = (f'<div class="pg-plate"><span class="pg-plate-top">PERÚ</span>'
-                  f'<span class="pg-plate-num">{v["placa"]}</span></div>') if v["placa"] else ""
-    cfg = {
-        "ok":      ("var(--ok)",   "check",  "Acceso autorizado",
-                    f'Titular: <b>{v["detalle"]}</b>', "Orden de apertura enviada a la barrera de entrada."),
-        "lleno":   ("var(--warn)", "alert",  "Estacionamiento completo",
-                    f'Titular: <b>{v["detalle"]}</b>', "No hay plazas libres. La barrera permanece cerrada."),
-        "denegado":("var(--deny)", "ban",    "Acceso denegado",
-                    "La placa no está en la lista de vehículos autorizados.", "Incidente registrado en la bitácora."),
-        "error":   ("var(--deny)", "alert",  "No se pudo leer la placa",
-                    "Falló el reconocimiento de imagen. Intenta de nuevo.", v["detalle"]),
-        "config":  ("var(--warn)", "alert",  "Configuración incompleta", v["detalle"], ""),
-        "sin_placa":("var(--warn)","alert",  "No se detectó una placa legible",
-                    "Acerca la cámara a la placa y vuelve a tomar la foto.", ""),
-    }[v["tipo"]]
-    color, icono, titulo, detalle, meta = cfg
-    meta_txt = f"{meta} {v['hora']}".strip()
-    return (f'<div class="pg-verdict" style="--c:{color}">'
-            f'<div class="pg-verdict-title">{ico(icono, 22)}{titulo}</div>{placa_html}'
-            f'<div class="pg-detail">{detalle}</div><div class="pg-meta">{meta_txt}</div></div>')
-
 # ====================
-# TELEMETRÍA Y ENCABEZADO
+# CÁLCULO DE TELEMETRÍA UNIFICADA (MQTT + MONGODB)
 # ====================
 mqtt_data = obtener_estado_mqtt()
-est  = mqtt_data["estado"] or {}
+est_mqtt = mqtt_data["estado"] or {}
 disp = mqtt_data["disponibilidad"]
+es_online = (disp == "online")
 
-libres   = int(est.get("libres", 5))
-ocupados = int(est.get("ocupados", 0))
-cap      = int(est.get("cap", 5))
-b_ent    = est.get("barrera_entrada", "CERRADA")
-b_sal    = est.get("barrera_salida", "CERRADA")
-online   = (disp == "online")
+cap = int(est_mqtt.get("cap", estado_db.get("capacidad", 5)))
+esp1_ocupado = bool(est_mqtt.get("espacio_1", estado_db.get("espacio_1_ocupado", False)))
+esp2_ocupado = bool(est_mqtt.get("espacio_2", estado_db.get("espacio_2_ocupado", False)))
 
-pill = (f'<span class="pg-pill on">{ico("wifi", 16)}Nodo ESP32 en línea</span>' if online
-        else f'<span class="pg-pill off">{ico("wifioff", 16)}Nodo ESP32 sin conexión</span>')
+# 3 ocupados fijos de simulación + estado real de Espacio 1 y Espacio 2
+ocupados_base = int(estado_db.get("ocupados_base", 3))
+ocupados = min(cap, ocupados_base + (1 if esp1_ocupado else 0) + (1 if esp2_ocupado else 0))
+libres = max(0, cap - ocupados)
 
-st.markdown(
-    f'<div class="pg-head"><div class="pg-brand">{ico("shield", 30, 1.8)}'
-    f'<div><div class="pg-title">ParkGate</div>'
-    f'<div class="pg-sub">Control de acceso vehicular con lectura automática de placas</div></div></div>'
-    f'<div>{pill}</div></div>', unsafe_allow_html=True)
+b_ent = est_mqtt.get("barrera_entrada", "CERRADA")
+b_sal = est_mqtt.get("barrera_salida", "CERRADA")
 
-pct = int(ocupados / cap * 100) if cap > 0 else 0
-slots = "".join(f'<span class="pg-slot{" busy" if i < ocupados else ""}"></span>' for i in range(cap))
+# ====================
+# HERO HEADER & ALERT STRIP
+# ====================
+badge_html = (
+    '<span class="status-pill status-online"><span class="dot-online"></span>NODO ESP32 · EN LÍNEA</span>'
+    if es_online else
+    '<span class="status-pill status-offline"><span class="dot-offline"></span>NODO ESP32 · ESPERANDO FIRMWARE</span>'
+)
 
-def tile_barrera(titulo, icono, estado):
-    abierta = (estado == "ABIERTA")
-    color = "var(--ok)" if abierta else "var(--muted)"
-    return (f'<div class="pg-panel"><div class="pg-label">{ico(icono, 17)}{titulo}</div>'
-            f'<div class="pg-state" style="color:{color}">{estado.capitalize()}</div>'
-            f'<div class="pg-foot">{"Vehículo pasando" if abierta else "Cerrada"}</div></div>')
+st.markdown(f"""
+<div class="hero-header">
+    <div>
+        <div class="hero-title">🛡️ ParkGate AI · Control de Acceso Privado USIL</div>
+        <div class="hero-sub">Visión LPR (Gemini 2.5 Flash) · Anti-Clonación · Monitor de Plazas · Teleoperación MQTT</div>
+    </div>
+    <div>{badge_html}</div>
+</div>
+""", unsafe_allow_html=True)
 
-k1, k2, k3 = st.columns([1.7, 1, 1], gap="medium")
-with k1:
-    st.markdown(
-        f'<div class="pg-panel"><div class="pg-label">{ico("parking", 17)}Plazas libres</div>'
-        f'<div class="pg-big">{libres} <small>de {cap}</small></div>'
-        f'<div class="pg-foot">{ocupados} ocupadas ({pct}%)</div>'
-        f'<div class="pg-slots">{slots}</div></div>', unsafe_allow_html=True)
-with k2:
-    st.markdown(tile_barrera("Barrera de entrada", "login", b_ent), unsafe_allow_html=True)
-with k3:
-    st.markdown(tile_barrera("Barrera de salida", "logout", b_sal), unsafe_allow_html=True)
+# Alerta reciente de seguridad (si hubo clonación o invasión de plaza en últimos registros)
+if db is not None:
+    ultima_alerta = db["eventos_parking"].find_one({"severidad": "ALERTA"}, sort=[("fecha_utc", -1)])
+    if ultima_alerta:
+        hora_al = pd.to_datetime(ultima_alerta["fecha_utc"], utc=True).tz_convert(TZ_LIMA).strftime("%H:%M:%S")
+        st.markdown(f"""
+        <div class="alert-banner">
+            <div>⚠️ <b>ÚLTIMA ALERTA DE SEGURIDAD ({hora_al}):</b> {ultima_alerta.get("evento")} — Placa <code>{ultima_alerta.get("placa", "N/A")}</code> ({ultima_alerta.get("detalle", "")})</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ====================
+# KPI STRIP
+# ====================
+c1, c2, c3, c4 = st.columns(4)
+pct_ocupacion = int((ocupados / cap) * 100) if cap > 0 else 0
+color_ent = "#10B981" if b_ent == "ABIERTA" else "#94A3B8"
+color_sal = "#10B981" if b_sal == "ABIERTA" else "#94A3B8"
+
+with c1:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">Plazas Disponibles</div>
+        <div class="kpi-value">{libres} <span style="font-size:1rem;color:#64748B;">/ {cap}</span></div>
+        <div class="kpi-foot">LCD: "{estado_db.get('lcd_linea_1')} | Libres: {libres}/{cap}"</div>
+    </div>""", unsafe_allow_html=True)
+
+with c2:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">Ocupación Total</div>
+        <div class="kpi-value">{ocupados} <span style="font-size:1rem;color:#3B82F6;">({pct_ocupacion}%)</span></div>
+        <div class="kpi-foot">3 fijos + {int(esp1_ocupado) + int(esp2_ocupado)} en maqueta</div>
+    </div>""", unsafe_allow_html=True)
+
+with c3:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">Barrera de Entrada</div>
+        <div class="kpi-value" style="color:{color_ent};font-size:1.5rem;">{b_ent}</div>
+        <div class="kpi-foot">LED Rojo: {'ENCENDIDO' if estado_db.get('led_rojo_entrada', True) else 'APAGADO'}</div>
+    </div>""", unsafe_allow_html=True)
+
+with c4:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">Barrera de Salida</div>
+        <div class="kpi-value" style="color:{color_sal};font-size:1.5rem;">{b_sal}</div>
+        <div class="kpi-foot">Sensor ultrasónico autónomo</div>
+    </div>""", unsafe_allow_html=True)
 
 st.write("")
 
 # ====================
-# NAVEGACIÓN
+# NAVEGACIÓN PRINCIPAL (5 MÓDULOS DE PARKGATE AI)
 # ====================
-tab_cam, tab_placas, tab_ctrl, tab_hist = st.tabs([
-    ":material/photo_camera: Escáner de placas",
-    ":material/badge: Vehículos autorizados",
-    ":material/garage: Barreras",
-    ":material/history: Bitácora",
+tab_in, tab_spaces, tab_placas, tab_ctrl, tab_hist = st.tabs([
+    "📷 Escáner Entrada",
+    "🅿️ Plazas & Auditoría Interna",
+    "🪪 Padrón Vehicular",
+    "🎛️ Centro de Control Admin",
+    "📊 Bitácora & Alertas"
 ])
 
 # ---------------------------------------------------------
-# TAB 1: ESCÁNER LPR
+# TAB 1: ESCÁNER DE ENTRADA (3 ESCENARIOS + ANTI-CLONACIÓN)
 # ---------------------------------------------------------
-with tab_cam:
-    col_izq, col_der = st.columns([1.15, 1], gap="large")
+with tab_in:
+    col_cam, col_res = st.columns([1.1, 1], gap="large")
 
-    with col_izq:
+    with col_cam:
         with st.container(border=True):
-            st.markdown("#### Captura de placa")
-            st.caption("Enfoca la placa delantera o trasera con buena iluminación.")
-            foto = st.camera_input("Cámara de control de acceso", label_visibility="collapsed")
+            st.markdown("#### Cámara de Ingreso (Barrera Principal)")
+            st.caption("Escanea la placa al llegar a la garita para validar registro y anti-clonación.")
+            foto_entrada = st.camera_input("Cámara Entrada", label_visibility="collapsed", key="cam_entrada")
 
-    with col_der:
+    with col_res:
         with st.container(border=True):
-            st.markdown("#### Resultado")
-            if foto is not None:
-                # Evita reenviar la orden de apertura y duplicar logs en cada rerun
-                huella = hashlib.md5(foto.getvalue()).hexdigest()
-                if st.session_state.get("foto_huella") != huella:
-                    with st.spinner("Leyendo la placa..."):
-                        st.session_state["veredicto"] = evaluar_placa(foto, libres)
-                    st.session_state["foto_huella"] = huella
-                st.markdown(veredicto_html(st.session_state["veredicto"]), unsafe_allow_html=True)
+            st.markdown("#### Dictamen de Control de Acceso")
+            if foto_entrada is not None:
+                with st.spinner("Analizando placa con Gemini 2.5 Flash y verificando estado en MongoDB..."):
+                    raw_texto, latencia = reconocer_placa_gemini(foto_entrada.getvalue(), foto_entrada.type)
+                    placa = normalizar_placa(raw_texto)
+
+                if not placa or "SINPLACA" in placa:
+                    st.warning("No se detectó una placa legible. Enfoca mejor la matrícula e inténtalo nuevamente.")
+                elif db is None:
+                    st.error("Sin conexión a MongoDB Atlas.")
+                else:
+                    hora_lima = datetime.now(TZ_LIMA).strftime("%d/%m/%Y · %H:%M:%S")
+                    registro = db["placas_autorizadas"].find_one({"placa": placa, "activo": True})
+
+                    # CASO C: Placa NO registrada
+                    if not registro:
+                        enviar_comando_esp32("DENEGADO")
+                        registrar_evento_db("ACCESO_DENEGADO", placa, "Placa no registrada en lista blanca", "ALERTA")
+                        st.markdown(f"""
+                        <div class="ticket-deny">
+                            <div style="font-size:0.78rem;font-weight:700;color:#FB7185;letter-spacing:0.06em;">🚫 ACCESO DENEGADO · NO REGISTRADA ({latencia}s)</div>
+                            <div class="plate-badge">{placa}</div>
+                            <div style="color:#FECDD3;margin-top:0.35rem;">El vehículo no pertenece al estacionamiento privado.</div>
+                            <div style="color:#94A3B8;font-size:0.82rem;margin-top:0.25rem;">Servo: <b>CERRADO</b> · LED Rojo: <b>ENCENDIDO</b> · LCD: <code>PLACA NO REGISTRADA</code> · {hora_lima}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    # CASO B: Placa registrada PERO el vehículo YA ESTÁ DENTRO (Posible clonación)
+                    elif registro.get("dentro", False):
+                        propietario = registro.get("propietario", "Titular")
+                        espacio_asig = registro.get("espacio_asignado", "Sin asignar")
+                        enviar_comando_esp32("ALERTA_DUPLICADA")
+                        registrar_evento_db(
+                            "ALERTA_CLONACION_PLACA",
+                            placa,
+                            f"Vehículo ya figura DENTRO ({espacio_asig}) - Titular: {propietario}",
+                            "ALERTA"
+                        )
+                        st.markdown(f"""
+                        <div class="ticket-warn">
+                            <div style="font-size:0.78rem;font-weight:700;color:#FBBF24;letter-spacing:0.06em;">🚨 ALERTA DE SEGURIDAD · POSIBLE SUPLANTACIÓN ({latencia}s)</div>
+                            <div class="plate-badge">{placa}</div>
+                            <div style="color:#FEF3C7;margin-top:0.35rem;">El vehículo de <b>{propietario}</b> ({espacio_asig}) <b>YA SE ENCUENTRA DENTRO</b> del recinto.</div>
+                            <div style="color:#FDE68A;font-size:0.83rem;margin-top:0.3rem;">Barrera bloqueada · LCD: <code>ALERTA SEGURIDAD / PLACA DUPLICADA</code> · {hora_lima}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    # CASO A: Placa registrada y vehículo FUERA del recinto -> Ingreso válido
+                    else:
+                        propietario = registro.get("propietario", "Titular")
+                        espacio_asig = registro.get("espacio_asignado", "Espacio 1")
+                        if libres <= 0:
+                            st.error("Estacionamiento sin plazas libres (0/5).")
+                        else:
+                            db["placas_autorizadas"].update_one({"placa": placa}, {"$set": {"dentro": True}})
+                            enviar_comando_esp32("ABRIR_ENTRADA")
+                            registrar_evento_db("ACCESO_PERMITIDO", placa, f"Ingreso válido · {propietario} ({espacio_asig})", "INFO")
+                            st.markdown(f"""
+                            <div class="ticket-ok">
+                                <div style="font-size:0.78rem;font-weight:700;color:#34D399;letter-spacing:0.06em;">✅ ACCESO PERMITIDO · INGRESO VÁLIDO ({latencia}s)</div>
+                                <div class="plate-badge">{placa}</div>
+                                <div style="color:#F8FAFC;margin-top:0.35rem;">Titular: <b>{propietario}</b> · Plaza asignada: <b>{espacio_asig}</b></div>
+                                <div style="color:#A7F3D0;font-size:0.83rem;margin-top:0.3rem;">LED Rojo: <b>APAGADO</b> → Servo: <b>ABRIENDO</b> → Cierre automático · {hora_lima}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
             else:
-                st.session_state.pop("foto_huella", None)
-                st.info("Toma una foto de la placa. Se validará contra la lista de vehículos autorizados.",
-                        icon=":material/photo_camera:")
+                st.info("Esperando captura en garita de entrada. Se evaluarán los 3 escenarios automáticamente (Válido, Duplicado/Clonado o No Registrado).")
 
 # ---------------------------------------------------------
-# TAB 2: VEHÍCULOS AUTORIZADOS
+# TAB 2: MONITOR INTERNO (ESPACIO 1 Y 2) + ESCÁNER AUDITORÍA
+# ---------------------------------------------------------
+with tab_spaces:
+    st.markdown("#### Estado Físico de Plazas Sensorizadas (Maqueta)")
+    sp1, sp2 = st.columns(2, gap="large")
+
+    titular_e1 = db["placas_autorizadas"].find_one({"espacio_asignado": "Espacio 1", "activo": True}) if db is not None else None
+    titular_e2 = db["placas_autorizadas"].find_one({"espacio_asignado": "Espacio 2", "activo": True}) if db is not None else None
+
+    with sp1:
+        clase1 = "space-card-busy" if esp1_ocupado else "space-card-free"
+        estado_txt1 = "🔴 OCUPADO (Sensor detectó vehículo)" if esp1_ocupado else "🟢 LIBRE (LED Verde ENCENDIDO)"
+        dueno1 = f"{titular_e1['placa']} · {titular_e1['propietario']}" if titular_e1 else "Sin vehículo vinculado"
+        st.markdown(f"""
+        <div class="{clase1}">
+            <div style="font-size:0.8rem;font-weight:700;color:#94A3B8;">PLAZA PRIVADA 01</div>
+            <div style="font-size:1.35rem;font-weight:700;color:#F8FAFC;margin:0.2rem 0;">Espacio 1</div>
+            <div style="font-size:0.9rem;margin-bottom:0.4rem;">{estado_txt1}</div>
+            <div style="font-size:0.82rem;color:#CBD5E1;">Titular asignado: <b>{dueno1}</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with sp2:
+        clase2 = "space-card-busy" if esp2_ocupado else "space-card-free"
+        estado_txt2 = "🔴 OCUPADO (Sensor detectó vehículo)" if esp2_ocupado else "🟢 LIBRE (LED Verde ENCENDIDO)"
+        dueno2 = f"{titular_e2['placa']} · {titular_e2['propietario']}" if titular_e2 else "Sin vehículo vinculado"
+        st.markdown(f"""
+        <div class="{clase2}">
+            <div style="font-size:0.8rem;font-weight:700;color:#94A3B8;">PLAZA PRIVADA 02</div>
+            <div style="font-size:1.35rem;font-weight:700;color:#F8FAFC;margin:0.2rem 0;">Espacio 2</div>
+            <div style="font-size:0.9rem;margin-bottom:0.4rem;">{estado_txt2}</div>
+            <div style="font-size:0.82rem;color:#CBD5E1;">Titular asignado: <b>{dueno2}</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.write("")
+    with st.container(border=True):
+        st.markdown("#### 🔍 Segundo Escáner LPR: Auditoría de Espacio Asignado")
+        st.caption("Selecciona la plaza donde está estacionado el vehículo y toma una foto de su placa para verificar que respetó su lugar.")
+        col_aud1, col_aud2 = st.columns([1.1, 1], gap="large")
+        with col_aud1:
+            espacio_evaluar = st.selectbox("¿En qué espacio está estacionado el vehículo?", ["Espacio 1", "Espacio 2"])
+            foto_auditoria = st.camera_input("Cámara Auditoría Plaza", label_visibility="collapsed", key="cam_auditoria")
+
+        with col_aud2:
+            if foto_auditoria is not None:
+                with st.spinner(f"Verificando titularidad en {espacio_evaluar}..."):
+                    raw_aud, lat_aud = reconocer_placa_gemini(foto_auditoria.getvalue(), foto_auditoria.type)
+                    placa_aud = normalizar_placa(raw_aud)
+
+                if not placa_aud or "SINPLACA" in placa_aud:
+                    st.warning("No se pudo leer la placa en el espacio. Acerca un poco más la cámara.")
+                elif db is not None:
+                    veh = db["placas_autorizadas"].find_one({"placa": placa_aud, "activo": True})
+                    hora_lima = datetime.now(TZ_LIMA).strftime("%H:%M:%S")
+                    if not veh:
+                        registrar_evento_db("INVASION_NO_REGISTRADO", placa_aud, f"Vehículo no registrado ocupando {espacio_evaluar}", "ALERTA")
+                        st.markdown(f"""
+                        <div class="ticket-deny">
+                            <div style="font-weight:700;color:#FB7185;">🚨 VEHÍCULO NO AUTORIZADO EN {espacio_evaluar.upper()}</div>
+                            <div class="plate-badge">{placa_aud}</div>
+                            <div style="color:#FECDD3;">Placa sin registro ocupando plaza privada ({hora_lima}).</div>
+                        </div>""", unsafe_allow_html=True)
+                    elif veh.get("espacio_asignado") == espacio_evaluar:
+                        registrar_evento_db("ESTACIONAMIENTO_CORRECTO", placa_aud, f"Confirmado en su plaza ({espacio_evaluar})", "INFO")
+                        st.markdown(f"""
+                        <div class="ticket-ok">
+                            <div style="font-weight:700;color:#34D399;">✅ PLAZA RESPETADA CORRECTAMENTE ({lat_aud}s)</div>
+                            <div class="plate-badge">{placa_aud}</div>
+                            <div style="color:#F8FAFC;">Titular <b>{veh.get('propietario')}</b> estacionado en su lugar asignado (<b>{espacio_evaluar}</b>).</div>
+                        </div>""", unsafe_allow_html=True)
+                    else:
+                        espacio_real = veh.get("espacio_asignado", "Otra plaza")
+                        enviar_comando_esp32("ALERTA_INVASION")
+                        registrar_evento_db(
+                            "ALERTA_INVASION_ESPACIO",
+                            placa_aud,
+                            f"Ocupó {espacio_evaluar} pero su plaza asignada es {espacio_real}",
+                            "ALERTA"
+                        )
+                        st.markdown(f"""
+                        <div class="ticket-warn">
+                            <div style="font-weight:700;color:#FBBF24;">⚠️ ALERTA: INVASIÓN DE ESPACIO ASIGNADO ({lat_aud}s)</div>
+                            <div class="plate-badge">{placa_aud}</div>
+                            <div style="color:#FEF3C7;">El vehículo de <b>{veh.get('propietario')}</b> está en <b>{espacio_evaluar}</b>, pero su espacio asignado es <b>{espacio_real}</b>.</div>
+                        </div>""", unsafe_allow_html=True)
+            else:
+                st.info("Toma una foto al vehículo estacionado para validar que ocupa su plaza asignada.")
+
+# ---------------------------------------------------------
+# TAB 3: PADRÓN VEHICULAR (ASIGNACIÓN DE ESPACIO 1 / 2)
 # ---------------------------------------------------------
 with tab_placas:
-    c_form, c_list = st.columns([1, 1.45], gap="large")
+    c_form, c_list = st.columns([1, 1.5], gap="large")
 
     with c_form:
         with st.container(border=True):
-            st.markdown("#### Registrar vehículo")
-            st.caption("Agrega o actualiza placas con apertura automática.")
+            st.markdown("#### Registrar / Vincular Vehículo")
+            st.caption("Asigna cada matrícula a su espacio privado en el estacionamiento.")
             with st.form("form_placa", clear_on_submit=True):
-                nueva_placa = st.text_input("Placa", placeholder="Ej. BBW-266")
-                propietario = st.text_input("Propietario o unidad", placeholder="Ej. Claudio Jara, Dpto 402")
-                guardado = st.form_submit_button("Autorizar placa", type="primary",
-                                                 icon=":material/add:", use_container_width=True)
+                nueva_placa = st.text_input("Matrícula", placeholder="Ej. BBW-266")
+                propietario = st.text_input("Propietario", placeholder="Ej. Claudio Jara")
+                espacio_sel = st.selectbox("Espacio Privado Asignado", ["Espacio 1", "Espacio 2", "Plaza 3 (Fija)", "Plaza 4 (Fija)", "Plaza 5 (Fija)"])
+                guardado = st.form_submit_button("Guardar en Padrón", type="primary", use_container_width=True)
                 if guardado and nueva_placa.strip() and db is not None:
                     p_norm = normalizar_placa(nueva_placa)
                     db["placas_autorizadas"].update_one(
                         {"placa": p_norm},
-                        {"$set": {"placa": p_norm,
-                                  "propietario": propietario.strip() or "Sin especificar",
-                                  "activo": True,
-                                  "actualizado_utc": datetime.now(timezone.utc)}},
-                        upsert=True,
+                        {"$set": {
+                            "placa": p_norm,
+                            "propietario": propietario.strip() or "Residente USIL",
+                            "espacio_asignado": espacio_sel,
+                            "dentro": False,
+                            "activo": True
+                        }},
+                        upsert=True
                     )
-                    st.toast(f"Placa {p_norm} autorizada", icon=":material/check_circle:")
+                    st.success(f"Vehículo **{p_norm}** vinculado a **{espacio_sel}**.")
                     st.rerun()
 
     with c_list:
         with st.container(border=True):
-            st.markdown("#### Vehículos autorizados")
+            st.markdown("#### Vehículos Autorizados y Estado Actual")
             if db is not None:
-                lista = list(db["placas_autorizadas"].find({"activo": True}, {"_id": 0, "placa": 1, "propietario": 1}))
+                lista = list(db["placas_autorizadas"].find(
+                    {"activo": True},
+                    {"_id": 0, "placa": 1, "propietario": 1, "espacio_asignado": 1, "dentro": 1}
+                ))
                 if lista:
-                    df_p = pd.DataFrame(lista).rename(columns={"placa": "Placa", "propietario": "Propietario"})
+                    df_p = pd.DataFrame(lista)
+                    df_p["Ubicación"] = df_p["dentro"].apply(lambda x: "DENTRO" if x else "FUERA")
+                    df_p = df_p.drop(columns=["dentro"])
                     st.dataframe(df_p, use_container_width=True, hide_index=True)
-                    d1, d2 = st.columns([2, 1])
-                    with d1:
-                        placa_borrar = st.selectbox("Revocar acceso", [x["placa"] for x in lista],
-                                                    label_visibility="collapsed")
-                    with d2:
-                        if st.button("Revocar", icon=":material/block:", use_container_width=True):
-                            db["placas_autorizadas"].update_one({"placa": placa_borrar}, {"$set": {"activo": False}})
+
+                    c_act1, c_act2, c_act3 = st.columns([1.5, 1, 1])
+                    with c_act1:
+                        placa_sel = st.selectbox("Seleccionar placa", [x["placa"] for x in lista], label_visibility="collapsed")
+                    with c_act2:
+                        if st.button("Marcar FUERA", use_container_width=True):
+                            db["placas_autorizadas"].update_one({"placa": placa_sel}, {"$set": {"dentro": False}})
+                            st.rerun()
+                    with c_act3:
+                        if st.button("Revocar", use_container_width=True):
+                            db["placas_autorizadas"].update_one({"placa": placa_sel}, {"$set": {"activo": False}})
                             st.rerun()
                 else:
-                    st.info("Aún no hay vehículos autorizados. Registra el primero con el formulario.",
-                            icon=":material/badge:")
-            else:
-                st.error("Falta configurar la conexión a MongoDB Atlas.", icon=":material/database_off:")
+                    st.info("No hay vehículos registrados todavía.")
 
 # ---------------------------------------------------------
-# TAB 3: BARRERAS
+# TAB 4: CENTRO DE CONTROL DEL ADMINISTRADOR (OVERRIDE HARDWARE)
 # ---------------------------------------------------------
 with tab_ctrl:
-    col_m1, col_m2 = st.columns(2, gap="large")
+    st.markdown("#### Teleoperación Directa de Maqueta (Override Administrador)")
+    col_s1, col_s2 = st.columns(2, gap="large")
 
-    with col_m1:
+    with col_s1:
         with st.container(border=True):
-            st.markdown("#### Barrera de entrada")
-            st.caption("Acciona el servomotor de ingreso.")
+            st.markdown("##### 🚧 Servomotores de Barrera")
             b1, b2 = st.columns(2)
             with b1:
-                if st.button("Abrir", key="ab_ent", type="primary", icon=":material/lock_open:",
-                             use_container_width=True):
-                    if enviar_comando_esp32("ABRIR_ENTRADA"):
-                        registrar_evento_db("APERTURA_MANUAL_ENTRADA", "", "Consola operador")
-                        st.toast("Entrada: orden de apertura enviada", icon=":material/check_circle:")
+                if st.button("⬆️ Abrir Entrada", type="primary", use_container_width=True):
+                    enviar_comando_esp32("ABRIR_ENTRADA")
+                    registrar_evento_db("ADMIN_ABRIR_ENTRADA", "", "Override manual administrador", "INFO")
+                    st.toast("Servo Entrada -> ABRIR", icon="⬆️")
+                if st.button("⬇️ Cerrar Entrada", use_container_width=True):
+                    enviar_comando_esp32("CERRAR_ENTRADA")
+                    st.toast("Servo Entrada -> CERRAR", icon="⬇️")
             with b2:
-                if st.button("Cerrar", key="ce_ent", icon=":material/lock:", use_container_width=True):
-                    if enviar_comando_esp32("CERRAR_ENTRADA"):
-                        st.toast("Entrada: orden de cierre enviada", icon=":material/lock:")
+                if st.button("⬆️ Abrir Salida", type="primary", use_container_width=True):
+                    enviar_comando_esp32("ABRIR_SALIDA")
+                    registrar_evento_db("ADMIN_ABRIR_SALIDA", "", "Override manual administrador", "INFO")
+                    st.toast("Servo Salida -> ABRIR", icon="⬆️")
+                if st.button("⬇️ Cerrar Salida", use_container_width=True):
+                    enviar_comando_esp32("CERRAR_SALIDA")
+                    st.toast("Servo Salida -> CERRAR", icon="⬇️")
 
-    with col_m2:
         with st.container(border=True):
-            st.markdown("#### Barrera de salida")
-            st.caption("Acciona el servomotor de salida.")
-            b3, b4 = st.columns(2)
-            with b3:
-                if st.button("Abrir", key="ab_sal", type="primary", icon=":material/lock_open:",
-                             use_container_width=True):
-                    if enviar_comando_esp32("ABRIR_SALIDA"):
-                        registrar_evento_db("APERTURA_MANUAL_SALIDA", "", "Consola operador")
-                        st.toast("Salida: orden de apertura enviada", icon=":material/check_circle:")
-            with b4:
-                if st.button("Cerrar", key="ce_sal", icon=":material/lock:", use_container_width=True):
-                    if enviar_comando_esp32("CERRAR_SALIDA"):
-                        st.toast("Salida: orden de cierre enviada", icon=":material/lock:")
+            st.markdown("##### 📟 Pantalla LCD 16x2")
+            l1 = st.text_input("Línea 1 (máx 16 caracteres)", value="SMART PARKING USIL", max_chars=16)
+            l2 = st.text_input("Línea 2 (máx 16 caracteres)", value=f"Libres: {libres} / {cap}", max_chars=16)
+            cl1, cl2 = st.columns(2)
+            with cl1:
+                if st.button("Enviar Texto a LCD", type="primary", use_container_width=True):
+                    payload_lcd = json.dumps({"l1": l1, "l2": l2})
+                    enviar_comando_esp32(payload_lcd, topic=TOPIC_LCD)
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"lcd_linea_1": l1, "lcd_linea_2": l2}})
+                    st.toast("Mensaje actualizado en LCD", icon="📟")
+            with cl2:
+                if st.button("Restaurar LCD Base", use_container_width=True):
+                    enviar_comando_esp32("LCD_DEFAULT")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"lcd_linea_1": "SMART PARKING USIL", "lcd_linea_2": f"Libres: {libres} / {cap}"}})
+                    st.rerun()
 
-    st.write("")
-    if st.button("Actualizar estado", icon=":material/sync:", use_container_width=True):
-        st.rerun()
+    with col_s2:
+        with st.container(border=True):
+            st.markdown("##### 💡 Control Manual de Indicadores LED")
+            st.caption("Enciende o apaga individualmente los LEDs rojos de barrera y los LEDs verdes de plaza.")
+            ld1, ld2 = st.columns(2)
+            with ld1:
+                if st.button("🔴 LED Rojo Entrada ON", use_container_width=True):
+                    enviar_comando_esp32("LED_ROJO_IN_ON")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_rojo_entrada": True}})
+                    st.rerun()
+                if st.button("⚫ LED Rojo Entrada OFF", use_container_width=True):
+                    enviar_comando_esp32("LED_ROJO_IN_OFF")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_rojo_entrada": False}})
+                    st.rerun()
+                if st.button("🟢 LED Verde Espacio 1 ON", use_container_width=True):
+                    enviar_comando_esp32("LED_VERDE_1_ON")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_verde_1": True, "espacio_1_ocupado": False}})
+                    st.rerun()
+                if st.button("⚫ LED Verde Espacio 1 OFF", use_container_width=True):
+                    enviar_comando_esp32("LED_VERDE_1_OFF")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_verde_1": False, "espacio_1_ocupado": True}})
+                    st.rerun()
+
+            with ld2:
+                if st.button("🔴 LED Rojo Salida ON", use_container_width=True):
+                    enviar_comando_esp32("LED_ROJO_OUT_ON")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_rojo_salida": True}})
+                    st.rerun()
+                if st.button("⚫ LED Rojo Salida OFF", use_container_width=True):
+                    enviar_comando_esp32("LED_ROJO_OUT_OFF")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_rojo_salida": False}})
+                    st.rerun()
+                if st.button("🟢 LED Verde Espacio 2 ON", use_container_width=True):
+                    enviar_comando_esp32("LED_VERDE_2_ON")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_verde_2": True, "espacio_2_ocupado": False}})
+                    st.rerun()
+                if st.button("⚫ LED Verde Espacio 2 OFF", use_container_width=True):
+                    enviar_comando_esp32("LED_VERDE_2_OFF")
+                    if db is not None:
+                        db["estado_sistema"].update_one({"_id": "p01"}, {"$set": {"led_verde_2": False, "espacio_2_ocupado": True}})
+                    st.rerun()
+
+        with st.container(border=True):
+            st.markdown("##### 🔄 Sincronización y Reset de Maqueta")
+            r1, r2 = st.columns(2)
+            with r1:
+                if st.button("Refrescar Telemetría", use_container_width=True):
+                    st.rerun()
+            with r2:
+                if st.button("Resetear Estado Base (2/5)", type="primary", use_container_width=True):
+                    enviar_comando_esp32("RESET_SISTEMA")
+                    if db is not None:
+                        db["placas_autorizadas"].update_many({}, {"$set": {"dentro": False}})
+                        db["estado_sistema"].update_one(
+                            {"_id": "p01"},
+                            {"$set": {
+                                "ocupados_base": 3, "espacio_1_ocupado": False, "espacio_2_ocupado": False,
+                                "led_verde_1": True, "led_verde_2": True,
+                                "led_rojo_entrada": True, "led_rojo_salida": True,
+                                "lcd_linea_1": "SMART PARKING USIL", "lcd_linea_2": "Libres: 2 / 5"
+                            }},
+                            upsert=True
+                        )
+                    st.toast("Sistema reiniciado a estado base (2/5 libres)", icon="🔄")
+                    st.rerun()
 
 # ---------------------------------------------------------
-# TAB 4: BITÁCORA
+# TAB 5: BITÁCORA Y AUDITORÍA EN MONGODB ATLAS
 # ---------------------------------------------------------
 with tab_hist:
     with st.container(border=True):
-        h1, h2 = st.columns([3, 1])
+        h1, h2 = st.columns([3.5, 1])
         with h1:
-            st.markdown("#### Bitácora de accesos e incidentes")
-            st.caption("Últimos 50 eventos guardados en MongoDB Atlas. Hora de Lima (UTC-5).")
+            st.markdown("#### Auditoría Centralizada de Accesos e Incidentes")
+            st.caption("Historial persistido en MongoDB Atlas (Hora Perú UTC-5).")
         with h2:
-            if st.button("Actualizar", icon=":material/sync:", use_container_width=True):
+            if st.button("🔄 Actualizar Bitácora", use_container_width=True):
                 st.rerun()
 
         if db is not None:
             eventos = list(db["eventos_parking"].find({}, {"_id": 0}).sort("fecha_utc", -1).limit(50))
             if eventos:
-                df = pd.DataFrame(eventos)
-                if "fecha_utc" in df.columns:
-                    df["Hora"] = (pd.to_datetime(df["fecha_utc"], utc=True)
-                                  .dt.tz_convert(TZ_LIMA).dt.strftime("%d/%m/%Y %H:%M:%S"))
-                    df = df.drop(columns=["fecha_utc"])
-                df = df.rename(columns={"evento": "Evento", "placa": "Placa",
-                                        "detalle": "Detalle", "origen": "Origen"})
-                orden = [c for c in ["Hora", "Evento", "Placa", "Detalle", "Origen"] if c in df.columns]
-                st.dataframe(df[orden], use_container_width=True, hide_index=True)
+                df_ev = pd.DataFrame(eventos)
+                if "fecha_utc" in df_ev.columns:
+                    df_ev["Hora Lima"] = pd.to_datetime(df_ev["fecha_utc"], utc=True).dt.tz_convert(TZ_LIMA).dt.strftime("%d/%m/%Y %H:%M:%S")
+                    df_ev = df_ev.drop(columns=["fecha_utc"])
+                st.dataframe(df_ev, use_container_width=True, hide_index=True)
             else:
-                st.info("Todavía no hay eventos. Aparecerán aquí al escanear una placa o accionar una barrera.",
-                        icon=":material/history:")
+                st.info("No hay eventos registrados todavía.")
